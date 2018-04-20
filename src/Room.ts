@@ -176,7 +176,7 @@ export abstract class Room<T= any> extends EventEmitter {
   }
 
   public send(client: Client, data: any): void {
-    send(client, [ this.roomId, Protocol.ROOM_DATA, data ]);
+    send(client, [ Protocol.ROOM_DATA, this.roomId, data ]);
   }
 
   public broadcast(data: any, options?: BroadcastOptions): boolean {
@@ -187,7 +187,7 @@ export abstract class Room<T= any> extends EventEmitter {
 
     // encode all messages with msgpack
     if (!(data instanceof Buffer)) {
-      data = msgpack.encode([this.roomId, Protocol.ROOM_DATA, data]);
+      data = msgpack.encode([Protocol.ROOM_DATA, this.roomId, data]);
     }
 
     let numClients = this.clients.length;
@@ -224,8 +224,8 @@ export abstract class Room<T= any> extends EventEmitter {
 
   protected sendState(client: Client): void {
     send(client, [
-      this.roomId,
       Protocol.ROOM_STATE,
+      this.roomId,
       this._previousStateEncoded,
       this.clock.currentTime,
       this.clock.elapsedTime,
@@ -351,7 +351,7 @@ export abstract class Room<T= any> extends EventEmitter {
     }
 
     // confirm room id that matches the room name requested to join
-    send(client, [ this.roomId, Protocol.JOIN_ROOM, client.sessionId ]);
+    send(client, [ Protocol.JOIN_ROOM, this.roomId, client.sessionId ]);
 
     // emit 'join' to room handler
     this.emit('join', client);
