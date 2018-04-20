@@ -272,7 +272,7 @@ export abstract class Room<T= any> extends EventEmitter {
     this._previousStateEncoded = currentStateEncoded;
 
     // broadcast patches (diff state) to all clients,
-    return this.broadcast( msgpack.encode([ this.roomId, Protocol.ROOM_STATE_PATCH, patches ]) );
+    return this.broadcast( msgpack.encode([ Protocol.ROOM_STATE_PATCH, this.roomId, patches ]) );
   }
 
   protected _disposeIfEmpty() {
