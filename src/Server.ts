@@ -199,7 +199,6 @@ export class Server {
         const roomId = message[1];
 
         this.matchMaker.remoteRoomCall(roomId, '_onLeave', [client]).
-        // then((rooms) => send(client, [Protocol.ROOM_LIST, requestId, rooms])).
         catch((e) => debugError(e.stack || e));
 
     } else {

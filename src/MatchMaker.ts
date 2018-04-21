@@ -44,10 +44,10 @@ export class MatchMaker {
     // assign sessionId to socket connection.
     client.sessionId = await this.presence.hget(roomId, client.id);
 
-    // clean temporary data
-    delete clientOptions.auth;
-    delete clientOptions.requestId;
-    delete client.options;
+    // [Modified] do not clean temporary data
+    // delete clientOptions.auth;
+    // delete clientOptions.requestId;
+    // delete client.options;
 
     if (this.localRooms[roomId]) {
       (room as any)._onJoin(client, clientOptions, client.auth);
