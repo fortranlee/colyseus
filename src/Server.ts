@@ -167,7 +167,9 @@ export class Server {
       return;
     }
 
-    if (message[0] === Protocol.JOIN_ROOM) {
+    const code = message[0];
+
+    if (code === Protocol.JOIN_ROOM) {
       const roomName = message[1];
       const joinOptions = message[2];
 
@@ -185,12 +187,19 @@ export class Server {
           });
       }
 
-    } else if (message[0] === Protocol.ROOM_LIST) {
-      const requestId = message[1];
-      const roomName = message[2];
+    } else if (code === Protocol.ROOM_LIST) {
+        const requestId = message[1];
+        const roomName = message[2];
 
-      this.matchMaker.getAvailableRooms(roomName).
+        this.matchMaker.getAvailableRooms(roomName).
         then((rooms) => send(client, [Protocol.ROOM_LIST, requestId, rooms])).
+        catch((e) => debugError(e.stack || e));
+
+    } else if (code === Protocol.LEAVE_ROOM) {
+        const roomId = message[1];
+
+        this.matchMaker.remoteRoomCall(roomId, '_onLeave', [client]).
+        // then((rooms) => send(client, [Protocol.ROOM_LIST, requestId, rooms])).
         catch((e) => debugError(e.stack || e));
 
     } else {
