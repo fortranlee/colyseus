@@ -21,6 +21,8 @@ export enum Protocol {
 
   // Generic messages (50~60)
   BAD_REQUEST = 50,
+  PING = 51,
+  PONG = 52,
 
   // WebSocket error codes
   WS_SERVER_DISCONNECT = 4201,
