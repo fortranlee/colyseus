@@ -43,9 +43,9 @@ export class MatchMaker {
     client.sessionId = await this.presence.get(`${roomId}:${client.id}`);
 
     // clean temporary data
-    delete clientOptions.auth;
-    delete clientOptions.requestId;
-    delete client.options;
+    // delete clientOptions.auth;
+    // delete clientOptions.requestId;
+    // delete client.options;
 
     if (this.localRooms[roomId]) {
       (room as any)._onJoin(client, clientOptions, client.auth);
