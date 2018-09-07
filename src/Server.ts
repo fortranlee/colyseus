@@ -159,6 +159,7 @@ export class Server {
       client.once('close', function() {
         debugMatchMaking('Client closed.');
         this.removeAllListeners('message');
+        this.removeAllListeners('error');
       }.bind(client));
     }
   }
