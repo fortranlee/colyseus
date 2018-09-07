@@ -155,11 +155,10 @@ export class Server {
         });
 
     } else {
-      const messageMatchMakingHandler = this.onMessageMatchMaking.bind(this, client);
-      client.on('message', messageMatchMakingHandler);
-      client.on('close', function() {
+      client.on('message', this.onMessageMatchMaking.bind(this, client));
+      client.once('close', function() {
         debugMatchMaking('Client closed.');
-        this.removeListener('message', messageMatchMakingHandler);
+        this.removeAllListeners('message');
       }.bind(client));
     }
   }
