@@ -421,10 +421,12 @@ export class MatchMaker {
 
   private onClientJoinRoom(room: Room, client: Client) {
     this.handlers[room.roomName].emit('join', room, client);
+    debugMatchMaking(`client joined room '%s'. localRooms.length = %d`, room.roomName, this.localRooms.length);
   }
 
   private onClientLeaveRoom(room: Room, client: Client) {
     this.handlers[room.roomName].emit('leave', room, client);
+    debugMatchMaking(`client left room '%s'. localRooms.length = %d`, room.roomName, this.localRooms.length);
   }
 
   private lockRoom(roomName: string, room: Room): void {
