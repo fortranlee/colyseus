@@ -160,7 +160,7 @@ export class Server {
       client.on('close', function() {
         debugMatchMaking('Client closed.');
         this.removeListener('message', messageMatchMakingHandler);
-      });
+      }.bind(client));
     }
   }
 
