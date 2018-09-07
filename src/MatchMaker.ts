@@ -44,10 +44,10 @@ export class MatchMaker {
     // assign sessionId to socket connection.
     client.sessionId = await this.presence.hget(roomId, client.id);
 
-    // [Modified] do not clean temporary data
-    // delete clientOptions.auth;
-    // delete clientOptions.requestId;
-    // delete client.options;
+    // clean temporary data
+    delete clientOptions.auth;
+    delete clientOptions.requestId;
+    delete client.options;
 
     if (this.localRooms[roomId]) {
       (room as any)._onJoin(client, clientOptions, client.auth);
@@ -421,12 +421,10 @@ export class MatchMaker {
 
   private onClientJoinRoom(room: Room, client: Client) {
     this.handlers[room.roomName].emit('join', room, client);
-    debugMatchMaking(`client joined room '%s'. localRooms.length = %d`, room.roomName, Object.keys(this.localRooms).length);
   }
 
   private onClientLeaveRoom(room: Room, client: Client) {
     this.handlers[room.roomName].emit('leave', room, client);
-    debugMatchMaking(`client left room '%s'. localRooms.length = %d`, room.roomName, Object.keys(this.localRooms).length);
   }
 
   private lockRoom(roomName: string, room: Room): void {
@@ -458,8 +456,6 @@ export class MatchMaker {
 
     // unsubscribe from remote connections
     this.presence.unsubscribe(this.getRoomChannel(room.roomId));
-
-    delete this.localRooms[room.roomId];
   }
 
 }
