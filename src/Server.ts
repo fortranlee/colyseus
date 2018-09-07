@@ -5,7 +5,7 @@ import * as parseURL from 'url-parse';
 import * as WebSocket from 'ws';
 import { ServerOptions as IServerOptions } from 'ws';
 
-import { debugError } from './Debug';
+import { debugError, debugMatchMaking } from './Debug';
 import { MatchMaker } from './MatchMaker';
 import { RegisteredHandler } from './matchmaker/RegisteredHandler';
 import { Presence } from './presence/Presence';
@@ -155,7 +155,12 @@ export class Server {
         });
 
     } else {
-      client.on('message',  this.onMessageMatchMaking.bind(this, client));
+      const messageMatchMakingHandler = this.onMessageMatchMaking.bind(this, client);
+      client.on('message', messageMatchMakingHandler);
+      client.on('close', function() {
+        debugMatchMaking('Client closed.');
+        this.removeListener('message', messageMatchMakingHandler);
+      });
     }
   }
 
