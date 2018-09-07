@@ -458,6 +458,8 @@ export class MatchMaker {
 
     // unsubscribe from remote connections
     this.presence.unsubscribe(this.getRoomChannel(room.roomId));
+
+    delete this.localRooms[room.roomId];
   }
 
 }
