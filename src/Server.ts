@@ -1,6 +1,5 @@
 import * as http from 'http';
 import * as net from 'net';
-import * as msgpack from 'notepack.io';
 import * as parseURL from 'url-parse';
 import * as WebSocket from 'ws';
 import { ServerOptions as IServerOptions } from 'ws';
@@ -12,10 +11,14 @@ import { Presence } from './presence/Presence';
 
 import { Client, generateId, isValidId } from './index';
 import { decode, Protocol, send } from './Protocol';
-import { Room, RoomConstructor } from './Room';
+import { RoomConstructor } from './Room';
 import { parseQueryString, registerGracefulShutdown } from './Utils';
 
+function noop() {/* tslint:disable:no-empty */}
+function heartbeat() { this.pingCount = 0; }
+
 export type ServerOptions = IServerOptions & {
+  pingTimeout?: number,
   verifyClient?: WebSocket.VerifyClientCallbackAsync
   presence?: any,
   engine?: any,
@@ -25,16 +28,19 @@ export type ServerOptions = IServerOptions & {
 export class Server {
   public matchMaker: MatchMaker;
 
-  protected server: any;
+  protected server: WebSocket.Server;
   protected httpServer: net.Server | http.Server;
 
   protected presence: Presence;
+  protected pingInterval: NodeJS.Timer;
+  protected pingTimeout: number;
 
   protected onShutdownCallback: () => void | Promise<any>;
 
   constructor(options: ServerOptions = {}) {
     this.presence = options.presence;
     this.matchMaker = new MatchMaker(this.presence);
+    this.pingTimeout = options.pingTimeout || 1500;
 
     this.onShutdownCallback = () => Promise.resolve();
 
@@ -43,7 +49,7 @@ export class Server {
 
     registerGracefulShutdown((signal) => {
       this.matchMaker.gracefullyShutdown().
-        then(() => this.onShutdownCallback()).
+        then(() => this.shutdown()).
         catch((err) => debugError(`error during shutdown: ${err}`)).
         then(() => process.exit());
     });
@@ -78,6 +84,21 @@ export class Server {
     }
 
     this.server.on('connection', this.onConnection);
+
+    // interval to detect broken connections
+    this.pingInterval = setInterval(() => {
+      this.server.clients.forEach((client: Client) => {
+        //
+        // if client hasn't responded after the interval, terminate its connection.
+        //
+        if (client.pingCount >= 2) {
+          return client.terminate();
+        }
+
+        client.pingCount++;
+        client.ping(noop);
+      });
+    }, this.pingTimeout);
   }
 
   public listen(port: number, hostname?: string, backlog?: number, listeningListener?: Function) {
@@ -104,21 +125,43 @@ export class Server {
     req.options = query;
 
     if (req.roomId) {
-      const isLocked = await this.matchMaker.remoteRoomCall(req.roomId, 'locked');
+      try {
+        // TODO: refactor me. this piece of code is repeated on MatchMaker class.
+        const hasReservedSeat = await this.matchMaker.remoteRoomCall(
+          req.roomId,
+          'hasReservedSeat',
+          [query.sessionId],
+          300,
+        );
 
-      if (isLocked) {
-        return next(false, Protocol.WS_TOO_MANY_CLIENTS, 'maxClients reached.');
-      }
+        if (!hasReservedSeat) {
+          const isLocked = await this.matchMaker.remoteRoomCall(
+            req.roomId,
+            'locked',
+            undefined,
+            300,
+          );
 
-      // verify client from room scope.
-      this.matchMaker.remoteRoomCall(req.roomId, 'onAuth', [req.options]).
-        then((result) => {
-          if (!result) { return next(false); }
+          if (isLocked) {
+            return next(false, Protocol.WS_TOO_MANY_CLIENTS, 'maxClients reached.');
+          }
+        }
 
-          req.auth = result;
+        // verify client from room scope.
+        const authResult = await this.matchMaker.remoteRoomCall(req.roomId, 'onAuth', [req.options]);
+
+        if (authResult) {
+          req.auth = authResult;
           next(true);
-        }).
-        catch((e) => next(false));
+
+        } else {
+          throw new Error('onAuth failed.');
+        }
+
+      } catch (e) {
+        debugError(e.message + '\n' + e.stack);
+        next(false);
+      }
 
     } else {
       next(true);
@@ -131,6 +174,7 @@ export class Server {
 
     // set client id
     client.id = upgradeReq.colyseusid || generateId();
+    client.pingCount = 0;
 
     // ensure client has its "colyseusid"
     if (!upgradeReq.colyseusid) {
@@ -142,9 +186,8 @@ export class Server {
     client.auth = upgradeReq.auth;
 
     // prevent server crashes if a single client had unexpected error
-    client.on('error', (err) => {
-      debugError(err.message + '\n' + err.stack);
-    });
+    client.on('error', (err) => debugError(err.message + '\n' + err.stack));
+    client.on('pong', heartbeat);
 
     const roomId = upgradeReq.roomId;
     if (roomId) {
@@ -210,6 +253,11 @@ export class Server {
       debugError(`MatchMaking couldn\'t process message: ${message}`);
     }
 
+  }
+
+  protected shutdown()  {
+    clearInterval(this.pingInterval);
+    return this.onShutdownCallback();
   }
 
 }

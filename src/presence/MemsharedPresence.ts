@@ -35,6 +35,19 @@ export class MemsharedPresence implements Presence {
         });
     }
 
+    public setex(key: string, value: string, seconds: number) {
+        memshared.setex(key, seconds, value);
+    }
+
+    public async get(key: string) {
+        return new Promise((resolve, reject) => {
+            memshared.get(key, (err, data) => {
+                if (err) { return reject(err); }
+                resolve(data);
+            });
+        });
+    }
+
     public del(roomId: string) {
         memshared.del(roomId);
     }
@@ -54,6 +67,15 @@ export class MemsharedPresence implements Presence {
 
     public srem(key: string, value: any) {
         memshared.srem(key, value);
+    }
+
+    public scard(key: string) {
+        return new Promise((resolve, reject) => {
+            memshared.scard(key, (err, data) => {
+                if (err) { return reject(err); }
+                resolve(data);
+            });
+        });
     }
 
     public hset(roomId: string, key: string, value: string) {
@@ -76,6 +98,24 @@ export class MemsharedPresence implements Presence {
     public hlen(roomId: string): Promise<number> {
         return new Promise((resolve, reject) => {
             memshared.hlen(roomId, (err, data) => {
+                if (err) { return reject(err); }
+                resolve(data);
+            });
+        });
+    }
+
+    public incr(key: string): Promise<number> {
+        return new Promise((resolve, reject) => {
+            memshared.incr(key, (err, data) => {
+                if (err) { return reject(err); }
+                resolve(data);
+            });
+        });
+    }
+
+    public decr(key: string): Promise<number> {
+        return new Promise((resolve, reject) => {
+            memshared.decr(key, (err, data) => {
                 if (err) { return reject(err); }
                 resolve(data);
             });

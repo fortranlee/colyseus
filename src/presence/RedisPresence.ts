@@ -13,6 +13,8 @@ export class RedisPresence implements Presence {
     protected hgetAsync: any;
     protected hlenAsync: any;
     protected pubsubAsync: any;
+    protected incrAsync: any;
+    protected decrAsync: any;
 
     constructor(opts?: redis.ClientOpts) {
         this.sub = redis.createClient(opts);
@@ -23,6 +25,8 @@ export class RedisPresence implements Presence {
         this.hgetAsync = promisify(this.pub.hget).bind(this.pub);
         this.hlenAsync = promisify(this.pub.hlen).bind(this.pub);
         this.pubsubAsync = promisify(this.pub.pubsub).bind(this.pub);
+        this.incrAsync = promisify(this.pub.incr).bind(this.pub);
+        this.decrAsync = promisify(this.pub.decr).bind(this.pub);
     }
 
     public subscribe(topic: string, callback: Function) {
@@ -61,6 +65,19 @@ export class RedisPresence implements Presence {
         return (await this.pubsubAsync('channels', roomId)).length > 0;
     }
 
+    public setex(key: string, value: string, seconds: number) {
+        this.pub.setex(key, seconds, value);
+    }
+
+    public async get(key: string) {
+        return new Promise((resolve, reject) => {
+            this.pub.get(key, (err, data) => {
+                if (err) { return reject(err); }
+                resolve(data);
+            });
+        });
+    }
+
     public del(roomId: string) {
         this.pub.del(roomId);
     }
@@ -77,6 +94,15 @@ export class RedisPresence implements Presence {
         this.pub.srem(key, value);
     }
 
+    public scard(key: string) {
+        return new Promise((resolve, reject) => {
+            this.pub.scard(key, (err, data) => {
+                if (err) { return reject(err); }
+                resolve(data);
+            });
+        });
+    }
+
     public hset(roomId: string, key: string, value: string) {
         this.pub.hset(roomId, key, value);
     }
@@ -91,6 +117,14 @@ export class RedisPresence implements Presence {
 
     public hlen(roomId: string): Promise<number> {
         return this.hlenAsync(roomId);
+    }
+
+    public incr(key: string): Promise<number> {
+        return this.incrAsync(key);
+    }
+
+    public decr(key: string): Promise<number> {
+        return this.decrAsync(key);
     }
 
 }

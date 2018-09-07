@@ -1,8 +1,11 @@
 import * as assert from "assert";
 import * as msgpack from "notepack.io";
 import * as sinon from 'sinon';
+
 import { Room } from "../src/Room";
+import { MatchMaker } from './../src/MatchMaker';
 import { Protocol } from "../src/Protocol";
+
 import {
   createDummyClient,
   DummyRoom,
@@ -11,6 +14,15 @@ import {
 } from "./utils/mock";
 
 describe('Room', function() {
+  let clock: sinon.SinonFakeTimers;
+
+  beforeEach(() => {
+    clock = sinon.useFakeTimers();
+  });
+
+  afterEach(() => {
+    clock.restore()
+  });
 
   describe('#constructor', function() {
 
@@ -57,18 +69,20 @@ describe('Room', function() {
     });
 
     it('should cleanup/dispose when all clients disconnect', function(done) {
-      var room = new DummyRoom();
-      var client = createDummyClient();
+      const room = new DummyRoom();
+      const client = createDummyClient();
 
       (<any>room)._onJoin(client);
-      assert.equal(typeof((<any>room)._patchInterval._repeat), "number");
+      assert.ok((<any>room)._patchInterval !== undefined);
 
       room.on('dispose', function() {;
-        assert.equal(typeof((<any>room)._patchInterval._repeat), "object");
+        assert.ok((<any>room)._patchInterval === undefined);
         done();
       });
 
       (<any>room)._onLeave(client);
+
+      clock.tick((room as any).seatReservationTime * 1000 + 1);
     });
   });
 
@@ -76,16 +90,14 @@ describe('Room', function() {
     it('should set default "patch" interval', function() {
       var room = new DummyRoom();
       assert.equal("object", typeof((<any>room)._patchInterval));
-      assert.equal(1000 / 20, (<any>room)._patchInterval._idleTimeout, "default patch rate should be 20");
+      assert.equal(1000 / 20, room.patchRate, "default patch rate should be 20");
     });
 
     it('should disable "patch" interval', function() {
       var room = new DummyRoom();
-      
-      room.setPatchRate(null);
 
-      assert.equal("object", typeof ((<any>room)._patchInterval));
-      assert.equal(-1, (<any>room)._patchInterval._idleTimeout, "patch rate should be disabled; set to -1");
+      room.setPatchRate(null);
+      assert.equal(undefined, (<any>room)._patchInterval, "patch rate should be disabled");
     });
   });
 
@@ -253,8 +265,6 @@ describe('Room', function() {
     it("should allow asynchronous disconnects", (done) => {
       let room = new DummyRoom();
 
-      let clock = sinon.useFakeTimers();
-
       // connect 10 clients
       let client1 = createDummyClient();
       (<any>room)._onJoin(client1, {});
@@ -266,16 +276,86 @@ describe('Room', function() {
       (<any>room)._onJoin(client3, {});
 
       // force asynchronous
-      setTimeout(() => (<any>room)._onLeave(client1, true), 0);
+      setTimeout(() => (<any>room)._onLeave(client1, true), 1);
       setTimeout(() => {
         assert.doesNotThrow(() => room.disconnect());
-      }, 0);
-      setTimeout(() => (<any>room)._onLeave(client2, true), 0);
-      setTimeout(() => (<any>room)._onLeave(client3, true), 0);
+      }, 1);
+      setTimeout(() => (<any>room)._onLeave(client2, true), 1);
+      setTimeout(() => (<any>room)._onLeave(client3, true), 1);
 
       // fulfil the test
-      clock.runAll();
+      clock.tick(1);
       done();
+    });
+
+  });
+
+  describe("#allowReconnection", () => {
+    const matchMaker = new MatchMaker();
+    matchMaker.registerHandler('reconnect', DummyRoom);
+
+    it("should fail waiting same sessionId for reconnection", (done) => {
+      const client = createDummyClient({});
+      matchMaker.onJoinRoomRequest(client, 'reconnect', {}).
+        then((roomId) => {
+          const room = matchMaker.getRoomById(roomId);
+
+          room.onLeave = async function (client) {
+            try {
+              await this.allowReconnection(client, 10);
+              assert.fail("this block shouldn't have been reached.");
+
+            } catch (e) {
+              done();
+            }
+          }
+
+          matchMaker.connectToRoom(client, roomId).
+            then(() => {
+              assert.equal(room.clients.length, 1);
+
+              client.emit("close");
+              assert.equal(room.clients.length, 0);
+
+              clock.tick(11 * 1000);
+            });
+        });
+
+    });
+
+    it("should succeed waiting same sessionId for reconnection", async () => {
+      const firstClient = createDummyClient({});
+      const roomId = await matchMaker.onJoinRoomRequest(firstClient, 'reconnect', {});
+
+      const room = matchMaker.getRoomById(roomId);
+      const reconnectionSpy = sinon.spy();
+
+      room.onLeave = async function(client) {
+        try {
+          const reconnectionClient = await this.allowReconnection(client, 10);
+          assert.equal(client.sessionId, reconnectionClient.sessionId);
+          reconnectionSpy();
+
+        } catch (e) {
+          assert.fail("catch block shouldn't be called here.");
+        }
+      }
+
+      await matchMaker.connectToRoom(firstClient, roomId);
+      assert.equal(room.clients.length, 1);
+      firstClient.emit("close");
+
+      assert.equal(room.clients.length, 0);
+      clock.tick(5 * 1000);
+
+      const secondClient = createDummyClient({});
+      const secondRoomId = await matchMaker.onJoinRoomRequest(secondClient, 'reconnect', {
+        sessionId: firstClient.sessionId
+      });
+      assert.equal(roomId, secondRoomId);
+      await matchMaker.connectToRoom(secondClient, roomId);
+
+      sinon.assert.calledOnce(reconnectionSpy);
     });
 
   });

@@ -1,6 +1,6 @@
 import * as fossilDelta from 'fossil-delta';
 import * as msgpack from 'notepack.io';
-import * as shortid from 'shortid';
+import * as WebSocket from 'ws';
 
 import { createTimeline, Timeline } from '@gamestdio/timeline';
 import Clock from '@gamestdio/timer';
@@ -9,14 +9,16 @@ import { EventEmitter } from 'events';
 import { Client } from './index';
 import { Presence } from './presence/Presence';
 import { RemoteClient } from './presence/RemoteClient';
-import { decode, Protocol, send } from './Protocol';
-import { logError, spliceOne } from './Utils';
+import { decode, Protocol, send, WS_CLOSE_CONSENTED } from './Protocol';
+import { Deferred, logError, spliceOne } from './Utils';
 
 import * as jsonPatch from 'fast-json-patch'; // this is only used for debugging patches
 import { debugError, debugPatch, debugPatchData } from './Debug';
 
 const DEFAULT_PATCH_RATE = 1000 / 20; // 20fps (50ms)
 const DEFAULT_SIMULATION_INTERVAL = 1000 / 60; // 60fps (16.66ms)
+
+const DEFAULT_SEAT_RESERVATION_TIME = 3;
 
 export type SimulationCallback = (deltaTime?: number) => void;
 
@@ -54,6 +56,13 @@ export abstract class Room<T= any> extends EventEmitter {
   public clients: Client[] = [];
   protected remoteClients: {[sessionId: string]: RemoteClient} = {};
 
+  // seat reservation & reconnection
+  protected seatReservationTime: number = DEFAULT_SEAT_RESERVATION_TIME;
+  protected reservedSeats: Set<string> = new Set();
+  protected reservedSeatTimeouts: {[sessionId: string]: NodeJS.Timer} = {};
+
+  protected reconnections: {[sessionId: string]: Deferred} = {};
+
   // when a new user connects, it receives the '_previousState', which holds
   // the last binary snapshot other users already have, therefore the patches
   // that follow will be the same for all clients.
@@ -67,16 +76,14 @@ export abstract class Room<T= any> extends EventEmitter {
   private _lockedExplicitly: boolean = false;
   private _maxClientsReached: boolean = false;
 
-  // // this timeout prevents rooms that are created by one process, but no client
-  // // ever had success joining into it on the specified interval.
-  // private _disposeIfEmptyAfterCreationTimeout: NodeJS.Timer;
+  // this timeout prevents rooms that are created by one process, but no client
+  // ever had success joining into it on the specified interval.
+  private _autoDisposeTimeout: NodeJS.Timer;
 
   constructor(presence?: Presence) {
     super();
 
     this.presence = presence;
-
-    // this._disposeIfEmptyAfterCreationTimeout = setTimeout(() => this._disposeIfEmpty(), 10000);
 
     this.setPatchRate(this.patchRate);
   }
@@ -87,7 +94,7 @@ export abstract class Room<T= any> extends EventEmitter {
   // Optional abstract methods
   public onInit?(options: any): void;
   public onJoin?(client: Client, options?: any, auth?: any): void | Promise<any>;
-  public onLeave?(client: Client): void | Promise<any>;
+  public onLeave?(client: Client, consented?: boolean): void | Promise<any>;
   public onDispose?(): void | Promise<any>;
 
   public requestJoin(options: any, isNew?: boolean): number | boolean {
@@ -102,9 +109,17 @@ export abstract class Room<T= any> extends EventEmitter {
     return this._locked;
   }
 
-  public async hasReachedMaxClients(): Promise<boolean> {
-    const connectingClients = (await this.presence.hlen(this.roomId));
-    return (this.clients.length + connectingClients) >= this.maxClients;
+  public hasReachedMaxClients(): boolean {
+    return (this.clients.length + this.reservedSeats.size) >= this.maxClients;
+  }
+
+  public setSeatReservationTime(seconds: number) {
+    this.seatReservationTime = seconds;
+    return this;
+  }
+
+  public hasReservedSeat(sessionId: string): boolean {
+    return this.reservedSeats.has(sessionId);
   }
 
   public setSimulationInterval( callback: SimulationCallback, delay: number = DEFAULT_SIMULATION_INTERVAL ): void {
@@ -119,7 +134,10 @@ export abstract class Room<T= any> extends EventEmitter {
 
   public setPatchRate( milliseconds: number ): void {
     // clear previous interval in case called setPatchRate more than once
-    if ( this._patchInterval ) { clearInterval( this._patchInterval ); }
+    if (this._patchInterval) {
+      clearInterval(this._patchInterval);
+      this._patchInterval = undefined;
+    }
 
     if ( milliseconds !== null && milliseconds !== 0 ) {
       this._patchInterval = setInterval( this.broadcastPatch.bind(this), milliseconds );
@@ -176,7 +194,9 @@ export abstract class Room<T= any> extends EventEmitter {
   }
 
   public send(client: Client, data: any): void {
-    send(client, [ Protocol.ROOM_DATA, data ]);
+    if (client.readyState === WebSocket.OPEN) {
+      send(client, [Protocol.ROOM_DATA, data]);
+    }
   }
 
   public broadcast(data: any, options?: BroadcastOptions): boolean {
@@ -194,7 +214,10 @@ export abstract class Room<T= any> extends EventEmitter {
     while (numClients--) {
       const client = this.clients[ numClients ];
 
-      if (!options || options.except !== client) {
+      if (
+        client.readyState === WebSocket.OPEN &&
+        (!options || options.except !== client)
+      ) {
         client.send(data, { binary: true }, logError.bind(this));
       }
     }
@@ -216,7 +239,15 @@ export abstract class Room<T= any> extends EventEmitter {
 
     let i = this.clients.length;
     while (i--) {
-      promises.push( this._onLeave(this.clients[i]) );
+      const client = this.clients[i];
+      const reconnection = this.reconnections[client.sessionId];
+
+      if (reconnection) {
+        reconnection.reject();
+
+      } else {
+        promises.push(this._onLeave(client, WS_CLOSE_CONSENTED));
+      }
     }
 
     return Promise.all(promises);
@@ -274,8 +305,65 @@ export abstract class Room<T= any> extends EventEmitter {
     return this.broadcast( msgpack.encode([ Protocol.ROOM_STATE_PATCH, patches ]) );
   }
 
+  protected allowReconnection(client: Client, seconds: number = 15): Promise<Client> {
+    this._reserveSeat(client, seconds, true);
+
+    // keep reconnection reference in case the user reconnects into this room.
+    const reconnection = new Deferred();
+    this.reconnections[client.sessionId] = reconnection;
+
+    // expire seat reservation after timeout
+    this.reservedSeatTimeouts[client.sessionId] = setTimeout(() => reconnection.reject(false), seconds * 1000);
+
+    const cleanup = () => {
+      this.reservedSeats.delete(client.sessionId);
+      delete this.reconnections[client.sessionId];
+      delete this.reservedSeatTimeouts[client.sessionId];
+    };
+
+    reconnection.
+      then(() => {
+        clearTimeout(this.reservedSeatTimeouts[client.sessionId]);
+        cleanup();
+      }).
+      catch(cleanup);
+
+    return reconnection.promise;
+  }
+
+  protected _reserveSeat(
+    client: Client,
+    seconds: number = this.seatReservationTime,
+    allowReconnection: boolean = false,
+  ) {
+    this.presence.setex(`${this.roomId}:${client.id}`, client.sessionId, seconds);
+    this.reservedSeats.add(client.sessionId);
+
+    if (allowReconnection) {
+      // store reference of the roomId this client is allowed to reconnect to.
+      this.presence.setex(client.sessionId, this.roomId, seconds);
+
+    } else {
+      this.reservedSeatTimeouts[client.sessionId] = setTimeout(() =>
+        this.reservedSeats.delete(client.sessionId), seconds * 1000);
+    }
+
+    this.resetAutoDisposeTimeout(seconds);
+  }
+
+  protected resetAutoDisposeTimeout(timeoutInSeconds: number) {
+    clearTimeout(this._autoDisposeTimeout);
+
+    if (this.clients.length > 0 || !this.autoDispose) {
+      return;
+    }
+
+    this._autoDisposeTimeout = setTimeout(() =>
+      this._disposeIfEmpty(), timeoutInSeconds * 1000);
+  }
+
   protected _disposeIfEmpty() {
-    if ( this.clients.length === 0 ) {
+    if (this.clients.length === 0 && this.reservedSeats.size === 0) {
       this._dispose();
       this.emit('dispose');
     }
@@ -284,9 +372,19 @@ export abstract class Room<T= any> extends EventEmitter {
   protected _dispose(): Promise<any> {
     let userReturnData;
 
-    if ( this.onDispose ) { userReturnData = this.onDispose(); }
-    if ( this._patchInterval ) { clearInterval( this._patchInterval ); }
-    if ( this._simulationInterval ) { clearInterval( this._simulationInterval ); }
+    if (this.onDispose) {
+      userReturnData = this.onDispose();
+    }
+
+    if (this._patchInterval) {
+      clearInterval(this._patchInterval);
+      this._patchInterval = undefined;
+    }
+
+    if (this._simulationInterval) {
+      clearInterval(this._simulationInterval);
+      this._simulationInterval = undefined;
+     }
 
     // clear all timeouts/intervals + force to stop ticking
     this.clock.clear();
@@ -323,6 +421,9 @@ export abstract class Room<T= any> extends EventEmitter {
     if (message[0] === Protocol.ROOM_DATA) {
       this.onMessage(client, message[2]);
 
+    } else if (message[0] === Protocol.LEAVE_ROOM) {
+      client.close(WS_CLOSE_CONSENTED);
+
     } else {
       this.onMessage(client, message);
     }
@@ -338,10 +439,18 @@ export abstract class Room<T= any> extends EventEmitter {
 
     this.clients.push( client );
 
-    // if (this._disposeIfEmptyAfterCreationTimeout) {
-    //   clearInterval(this._disposeIfEmptyAfterCreationTimeout);
-    //   this._disposeIfEmptyAfterCreationTimeout = undefined;
-    // }
+    // delete seat reservation
+    this.reservedSeats.delete(client.sessionId);
+    if (this.reservedSeatTimeouts[client.sessionId]) {
+      clearTimeout(this.reservedSeatTimeouts[client.sessionId]);
+      delete this.reservedSeatTimeouts[client.sessionId];
+    }
+
+    // clear auto-dispose timeout.
+    if (this._autoDisposeTimeout) {
+      clearTimeout(this._autoDisposeTimeout);
+      this._autoDisposeTimeout = undefined;
+    }
 
     // lock automatically when maxClients is reached
     if (this.clients.length === this.maxClients) {
@@ -352,9 +461,6 @@ export abstract class Room<T= any> extends EventEmitter {
     // confirm room id that matches the room name requested to join
     send(client, [ Protocol.JOIN_ROOM, client.sessionId ]);
 
-    // emit 'join' to room handler
-    this.emit('join', client);
-
     // bind onLeave method.
     client.on('message', this._onMessage.bind(this, client));
     client.once('close', this._onLeave.bind(this, client));
@@ -364,17 +470,24 @@ export abstract class Room<T= any> extends EventEmitter {
       this.sendState(client);
     }
 
-    if (this.onJoin) {
-      return this.onJoin(client, options, auth);
+    const reconnection = this.reconnections[client.sessionId];
+    if (reconnection) {
+      reconnection.resolve(client);
+
+    } else {
+      // emit 'join' to room handler
+      this.emit('join', client);
+
+      return this.onJoin && this.onJoin(client, options, auth);
     }
   }
 
-  private _onLeave(client: Client): void | Promise<any> {
+  private _onLeave(client: Client, code?: any): void | Promise<any> {
     let userReturnData;
 
     // call abstract 'onLeave' method only if the client has been successfully accepted.
     if (spliceOne(this.clients, this.clients.indexOf(client)) && this.onLeave) {
-      userReturnData = this.onLeave(client);
+      userReturnData = this.onLeave(client, (code === WS_CLOSE_CONSENTED));
     }
 
     this.emit('leave', client);
@@ -384,9 +497,9 @@ export abstract class Room<T= any> extends EventEmitter {
       delete this.remoteClients[client.sessionId];
     }
 
-    // custom cleanup method & clear intervals
-    if ( this.autoDispose ) {
-      this._disposeIfEmpty();
+    // dispose immediatelly if client reconnection isn't set up.
+    if (!this.reservedSeats.has(client.sessionId) && this.autoDispose) {
+      this.resetAutoDisposeTimeout(this.seatReservationTime);
     }
 
     // unlock if room is available for new connections
