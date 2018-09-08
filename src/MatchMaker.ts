@@ -185,7 +185,9 @@ export class MatchMaker {
         unsubscribeTimeout = setTimeout(() => {
           unsubscribe();
 
-          const request = `${method}${ args && ' with args ' + JSON.stringify(args) || '' }`;
+          // TODO fix circle ref
+          // const request = `${method}${ args && ' with args ' + JSON.stringify(args) || '' }`;
+          const request = method;
           reject(new Error(`remote room (${roomId}) timed out, requesting "${request}"`));
         }, rejectionTimeout);
       });
