@@ -187,7 +187,7 @@ export class Server {
 
     // prevent server crashes if a single client had unexpected error
     client.on('error', (err) => debugError(err.message + '\n' + err.stack));
-    client.on('pong', heartbeat);
+    client.on('pong', heartbeat.bind(client));
 
     const roomId = upgradeReq.roomId;
     if (roomId) {
@@ -203,6 +203,7 @@ export class Server {
         debugMatchMaking('Client closed.');
         this.removeAllListeners('message');
         this.removeAllListeners('error');
+        this.removeAllListeners('pong');
       }.bind(client));
     }
   }
