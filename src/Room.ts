@@ -423,7 +423,7 @@ export abstract class Room<T= any> extends EventEmitter {
       this.onMessage(client, message[2]);
 
     } else if (message[0] === Protocol.LEAVE_ROOM) {
-      client.close(WS_CLOSE_CONSENTED);
+      // client.close(WS_CLOSE_CONSENTED);
 
     } else {
       this.onMessage(client, message);
