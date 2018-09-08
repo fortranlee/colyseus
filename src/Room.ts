@@ -463,7 +463,7 @@ export abstract class Room<T= any> extends EventEmitter {
     send(client, [ Protocol.JOIN_ROOM, this.roomId, client.sessionId ]);
 
     // bind onLeave method.
-    client.on('message', this._onMessage.bind(this, client));
+    // client.on('message', this._onMessage.bind(this, client));
     client.once('close', this._onLeave.bind(this, client));
 
     // send current state when new client joins the room
